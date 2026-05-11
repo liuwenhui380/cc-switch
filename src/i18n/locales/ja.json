@@ -120,6 +120,7 @@
     "addOpenCodeProvider": "OpenCode プロバイダーを追加",
     "addToConfig": "追加",
     "removeFromConfig": "削除",
+    "switchToAccountAuth": "アカウント認証に切り替え",
     "setAsDefault": "デフォルトに設定",
     "isDefault": "現在のデフォルト",
     "inConfig": "追加済み",
@@ -252,8 +253,8 @@
   "confirm": {
     "deleteProvider": "プロバイダーを削除",
     "deleteProviderMessage": "プロバイダー「{{name}}」を削除してもよろしいですか？この操作は元に戻せません。",
-    "removeProvider": "プロバイダーを解除",
-    "removeProviderMessage": "プロバイダー「{{name}}」を設定から解除してもよろしいですか？\n\n解除後、このプロバイダーは無効になりますが、設定データは CC Switch に保持されます。いつでも再追加できます。",
+    "removeProvider": "アカウント認証に切り替え",
+    "removeProviderMessage": "アカウント認証に切り替え、プロバイダー「{{name}}」を設定から解除してもよろしいですか？\n\n解除後、このプロバイダーは無効になりますが、設定データは CC Switch に保持されます。いつでも再追加できます。",
     "proxy": {
       "title": "ローカルルーティングの有効化",
       "message": "ローカルルーティングは上級機能です。有効にする前に、その仕組みを理解していることをご確認ください。\n\n適切な設定方法については、関連ドキュメントまたはプロバイダーにご相談ください。",

@@ -140,7 +140,7 @@ export function ProviderActions({
             isDefaultModel && "opacity-40 cursor-not-allowed",
           ),
           icon: <Minus className="h-4 w-4" />,
-          text: t("provider.removeFromConfig", { defaultValue: "移除" }),
+          text: t("provider.switchToAccountAuth", { defaultValue: "切换到账户认证" }),
         };
       }
       return {

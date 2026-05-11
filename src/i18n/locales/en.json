@@ -120,6 +120,7 @@
     "addOpenCodeProvider": "Add OpenCode Provider",
     "addToConfig": "Add",
     "removeFromConfig": "Remove",
+    "switchToAccountAuth": "Switch to Account Auth",
     "setAsDefault": "Set Default",
     "isDefault": "Current Default",
     "inConfig": "Added",
@@ -252,7 +253,7 @@
   "confirm": {
     "deleteProvider": "Delete Provider",
     "deleteProviderMessage": "Are you sure you want to delete provider \"{{name}}\"? This action cannot be undone.",
-    "removeProvider": "Remove Provider",
+    "removeProvider": "Switch to Account Auth",
     "removeProviderMessage": "Are you sure you want to remove provider \"{{name}}\" from the configuration?\n\nAfter removal, this provider will no longer be active, but the configuration data will be retained in CC Switch. You can re-add it at any time.",
     "proxy": {
       "title": "Enable Local Routing",
