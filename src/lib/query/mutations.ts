@@ -2,7 +2,11 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { providersApi, sessionsApi, settingsApi, type AppId } from "@/lib/api";
-import type { DeleteSessionOptions } from "@/lib/api/sessions";
+import type {
+  DeleteSessionOptions,
+  SessionSyncRequest,
+  SessionSyncResult,
+} from "@/lib/api/sessions";
 import type { SwitchResult } from "@/lib/api/providers";
 import type { Provider, SessionMeta, Settings } from "@/types";
 import { extractErrorMessage } from "@/utils/errorUtils";
@@ -338,6 +342,26 @@ export const useDeleteSessionMutation = () => {
           error: detail,
         }),
       );
+    },
+  });
+};
+
+export const usePreviewSessionSyncMutation = () => {
+  return useMutation({
+    mutationFn: async (
+      request: SessionSyncRequest,
+    ): Promise<SessionSyncResult> => {
+      return await sessionsApi.previewSync({ ...request, dryRun: true });
+    },
+  });
+};
+
+export const useSyncSessionsToProviderMutation = () => {
+  return useMutation({
+    mutationFn: async (
+      request: SessionSyncRequest,
+    ): Promise<SessionSyncResult> => {
+      return await sessionsApi.syncToProvider(request);
     },
   });
 };
