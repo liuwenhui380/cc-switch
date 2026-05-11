@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSessionSearch } from "@/hooks/useSessionSearch";
+import { useSessionSync } from "@/hooks/useSessionSync";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { toast } from "sonner";
@@ -23,6 +24,7 @@ import {
 } from "@/lib/query";
 import { sessionsApi } from "@/lib/api";
 import type { SessionMeta } from "@/types";
+import type { SessionSyncResult } from "@/lib/api/sessions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -83,6 +85,9 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const [selectedSessionKeys, setSelectedSessionKeys] = useState<Set<string>>(
     () => new Set(),
   );
+  const [previewResult, setPreviewResult] = useState<SessionSyncResult | null>(
+    null,
+  );
   const [isBatchDeleting, setIsBatchDeleting] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -134,6 +139,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     );
   const deleteSessionMutation = useDeleteSessionMutation();
   const isDeleting = deleteSessionMutation.isPending || isBatchDeleting;
+  const { preview, isPreviewing } = useSessionSync();
 
   const virtualizer = useVirtualizer({
     count: messages.length,
@@ -340,6 +346,40 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       setIsBatchDeleting(false);
     }
   };
+
+  const handleSyncPreview = useCallback(async () => {
+    const providerIds = Array.from(
+      new Set(sessions.map((session) => session.providerId)),
+    );
+    const sourceProviderIds = providerIds.filter((id) => id !== appId);
+    if (sourceProviderIds.length === 0) {
+      toast.warning(
+        t("sessionManager.syncNoSources", {
+          defaultValue: "没有可用于预览同步的来源渠道",
+        }),
+      );
+      return;
+    }
+
+    const result = await preview({
+      targetProviderId: appId,
+      sourceProviderIds,
+      mode: "metadata_only",
+      conflictPolicy: "keep_target",
+      dryRun: true,
+    });
+    setPreviewResult(result);
+
+    toast.success(
+      t("sessionManager.syncPreviewSummary", {
+        defaultValue:
+          "预览完成：扫描 {{total}}，可导入 {{imported}}，冲突 {{conflicts}}",
+        total: result.totalScanned,
+        imported: result.imported,
+        conflicts: result.conflicts,
+      }),
+    );
+  }, [appId, preview, sessions, t]);
 
   const deletableFilteredSessions = useMemo(
     () => filteredSessions.filter((session) => Boolean(session.sourcePath)),
@@ -676,6 +716,29 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                               variant="ghost"
                               size="icon"
                               className="size-7"
+                              disabled={isPreviewing}
+                              onClick={() => void handleSyncPreview()}
+                            >
+                              <Play className="size-3.5" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {isPreviewing
+                              ? t("sessionManager.syncPreviewing", {
+                                  defaultValue: "预览中...",
+                                })
+                              : t("sessionManager.syncPreview", {
+                                  defaultValue: "同步预览",
+                                })}
+                          </TooltipContent>
+                        </Tooltip>
+
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-7"
                               onClick={() => void refetch()}
                             >
                               <RefreshCw className="size-3.5" />
@@ -751,6 +814,28 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                             </span>
                           </Button>
                         </div>
+                      </div>
+                    )}
+                    {!selectionMode && previewResult && (
+                      <div className="grid grid-cols-3 gap-2 text-xs">
+                        <Badge variant="outline" className="justify-center">
+                          {t("sessionManager.syncPreviewScanned", {
+                            defaultValue: "扫描 {{count}}",
+                            count: previewResult.totalScanned,
+                          })}
+                        </Badge>
+                        <Badge variant="outline" className="justify-center">
+                          {t("sessionManager.syncPreviewImportable", {
+                            defaultValue: "可导入 {{count}}",
+                            count: previewResult.imported,
+                          })}
+                        </Badge>
+                        <Badge variant="outline" className="justify-center">
+                          {t("sessionManager.syncPreviewConflicts", {
+                            defaultValue: "冲突 {{count}}",
+                            count: previewResult.conflicts,
+                          })}
+                        </Badge>
                       </div>
                     )}
                   </div>
