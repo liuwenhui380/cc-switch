@@ -663,6 +663,20 @@ function App() {
     const { provider, action } = confirmAction;
 
     if (action === "remove") {
+      // Best effort: switch to an account-auth provider first, then remove API provider from live config.
+      // This enables quicker fallback to account auth while keeping provider data in CC Switch.
+      const providerList = Object.values(providers);
+      const accountAuthProvider = providerList.find(
+        (item) =>
+          item.category === "official" &&
+          item.id !== provider.id &&
+          item.id !== currentProviderId,
+      );
+
+      if (accountAuthProvider) {
+        await switchProvider(accountAuthProvider);
+      }
+
       // Remove from live config only (for additive mode apps like OpenCode/OpenClaw)
       // Does NOT delete from database - provider remains in the list
       await providersApi.removeFromLiveConfig(provider.id, activeApp);
