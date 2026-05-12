@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSessionSearch } from "@/hooks/useSessionSearch";
+import { useSessionSync } from "@/hooks/useSessionSync";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { toast } from "sonner";
@@ -23,6 +24,7 @@ import {
 } from "@/lib/query";
 import { sessionsApi } from "@/lib/api";
 import type { SessionMeta } from "@/types";
+import type { SessionSyncResult } from "@/lib/api/sessions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -83,6 +85,9 @@ export function SessionManagerPage({ appId }: { appId: string }) {
   const [selectedSessionKeys, setSelectedSessionKeys] = useState<Set<string>>(
     () => new Set(),
   );
+  const [previewResult, setPreviewResult] = useState<SessionSyncResult | null>(
+    null,
+  );
   const [isBatchDeleting, setIsBatchDeleting] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -134,6 +139,48 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     );
   const deleteSessionMutation = useDeleteSessionMutation();
   const isDeleting = deleteSessionMutation.isPending || isBatchDeleting;
+  const { preview, sync, isPreviewing, isSyncing } = useSessionSync();
+  const envSyncExecutionEnabled =
+    import.meta.env.VITE_ENABLE_SESSION_SYNC_EXECUTION === "true";
+  const [syncExecutionSupported, setSyncExecutionSupported] = useState(false);
+  const [syncExecutionReason, setSyncExecutionReason] = useState<string | null>(
+    null,
+  );
+  const syncExecutionEnabled = envSyncExecutionEnabled && syncExecutionSupported;
+
+  useEffect(() => {
+    let mounted = true;
+    void sessionsApi
+      .getSyncCapabilities(appId)
+      .then((capabilities) => {
+        if (!mounted) return;
+        const providerSupported =
+          capabilities.supportedTargetProviders?.includes(appId) ?? false;
+        setSyncExecutionSupported(
+          Boolean(capabilities.executionSupported && providerSupported),
+        );
+        setSyncExecutionReason(
+          providerSupported
+            ? capabilities.reason ?? null
+            : t("sessionManager.syncRunDisabled", {
+                defaultValue: "当前目标渠道暂不支持同步执行。",
+              }),
+        );
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setSyncExecutionSupported(false);
+        setSyncExecutionReason(
+          t("sessionManager.syncRunDisabled", {
+            defaultValue: "同步执行暂未开放，请先使用预览功能。",
+          }),
+        );
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [appId, t]);
 
   const virtualizer = useVirtualizer({
     count: messages.length,
@@ -340,6 +387,64 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       setIsBatchDeleting(false);
     }
   };
+
+  const handleSyncPreview = useCallback(async () => {
+    const providerIds = Array.from(
+      new Set(sessions.map((session) => session.providerId)),
+    );
+    const sourceProviderIds = providerIds.filter((id) => id !== appId);
+    if (sourceProviderIds.length === 0) {
+      toast.warning(
+        t("sessionManager.syncNoSources", {
+          defaultValue: "没有可用于预览同步的来源渠道",
+        }),
+      );
+      return;
+    }
+
+    const result = await preview({
+      targetProviderId: appId,
+      sourceProviderIds,
+      mode: "metadata_only",
+      conflictPolicy: "keep_target",
+      dryRun: true,
+    });
+    setPreviewResult(result);
+
+    toast.success(
+      t("sessionManager.syncPreviewSummary", {
+        defaultValue:
+          "预览完成：扫描 {{total}}，可导入 {{imported}}，冲突 {{conflicts}}",
+        total: result.totalScanned,
+        imported: result.imported,
+        conflicts: result.conflicts,
+      }),
+    );
+  }, [appId, preview, sessions, t]);
+
+  const handleSyncRun = useCallback(async () => {
+    const providerIds = Array.from(
+      new Set(sessions.map((session) => session.providerId)),
+    );
+    const sourceProviderIds = providerIds.filter((id) => id !== appId);
+    if (sourceProviderIds.length === 0) {
+      toast.warning(
+        t("sessionManager.syncNoSources", {
+          defaultValue: "没有可用于同步的来源渠道",
+        }),
+      );
+      return;
+    }
+
+    const result = await sync({
+      targetProviderId: appId,
+      sourceProviderIds,
+      mode: "metadata_only",
+      conflictPolicy: "keep_target",
+      dryRun: false,
+    });
+    setPreviewResult(result);
+  }, [appId, sessions, sync, t]);
 
   const deletableFilteredSessions = useMemo(
     () => filteredSessions.filter((session) => Boolean(session.sourcePath)),
@@ -676,6 +781,65 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                               variant="ghost"
                               size="icon"
                               className="size-7"
+                              disabled={isPreviewing || isSyncing}
+                              onClick={() => void handleSyncPreview()}
+                            >
+                              <Play className="size-3.5" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {isPreviewing
+                              ? t("sessionManager.syncPreviewing", {
+                                  defaultValue: "预览中...",
+                                })
+                              : t("sessionManager.syncPreview", {
+                                  defaultValue: "同步预览",
+                                })}
+                          </TooltipContent>
+                        </Tooltip>
+
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-7"
+                              disabled={
+                                isPreviewing || isSyncing || !syncExecutionEnabled
+                              }
+                              onClick={() => void handleSyncRun()}
+                              title={
+                                !syncExecutionEnabled
+                                  ? syncExecutionReason ||
+                                    t("sessionManager.syncRunDisabled", {
+                                      defaultValue:
+                                        "同步执行暂未开放，请先使用预览功能",
+                                    })
+                                  : undefined
+                              }
+                            >
+                              <RefreshCw
+                                className={`size-3.5 ${isSyncing ? "animate-spin" : ""}`}
+                              />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {isSyncing
+                              ? t("sessionManager.syncRunning", {
+                                  defaultValue: "同步中...",
+                                })
+                              : t("sessionManager.syncRun", {
+                                  defaultValue: "执行同步",
+                                })}
+                          </TooltipContent>
+                        </Tooltip>
+
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-7"
                               onClick={() => void refetch()}
                             >
                               <RefreshCw className="size-3.5" />
@@ -751,6 +915,68 @@ export function SessionManagerPage({ appId }: { appId: string }) {
                             </span>
                           </Button>
                         </div>
+                      </div>
+                    )}
+                    {!selectionMode && previewResult && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-end">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-[11px]"
+                            onClick={() => setPreviewResult(null)}
+                          >
+                            <X className="size-3 mr-1" />
+                            {t("sessionManager.syncPreviewClear", {
+                              defaultValue: "清除预览",
+                            })}
+                          </Button>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                          <Badge variant="outline" className="justify-center">
+                            {t("sessionManager.syncPreviewScanned", {
+                              defaultValue: "扫描 {{count}}",
+                              count: previewResult.totalScanned,
+                            })}
+                          </Badge>
+                          <Badge variant="outline" className="justify-center">
+                            {t("sessionManager.syncPreviewImportable", {
+                              defaultValue: "可导入 {{count}}",
+                              count: previewResult.imported,
+                            })}
+                          </Badge>
+                          <Badge variant="outline" className="justify-center">
+                            {t("sessionManager.syncPreviewConflicts", {
+                              defaultValue: "冲突 {{count}}",
+                              count: previewResult.conflicts,
+                            })}
+                          </Badge>
+                          <Badge variant="outline" className="justify-center">
+                            {t("sessionManager.syncPreviewFailedCount", {
+                              defaultValue: "失败 {{count}}",
+                              count: previewResult.failed,
+                            })}
+                          </Badge>
+                        </div>
+                        {previewResult.warnings &&
+                          previewResult.warnings.length > 0 && (
+                            <div className="text-xs text-amber-600 dark:text-amber-400 space-y-1">
+                              <div className="font-medium">
+                                {t("sessionManager.syncPreviewWarnings", {
+                                  defaultValue: "预览警告",
+                                })}
+                              </div>
+                              <ul className="list-disc list-inside space-y-0.5">
+                                {previewResult.warnings
+                                  .slice(0, 3)
+                                  .map((warning, index) => (
+                                    <li key={`${warning}-${index}`}>
+                                      {warning}
+                                    </li>
+                                  ))}
+                              </ul>
+                            </div>
+                          )}
                       </div>
                     )}
                   </div>

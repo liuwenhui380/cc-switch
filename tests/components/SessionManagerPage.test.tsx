@@ -15,12 +15,25 @@ import { setSessionFixtures } from "../msw/state";
 
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();
+const toastWarningMock = vi.fn();
+const previewSyncMock = vi.fn();
+const runSyncMock = vi.fn();
 
 vi.mock("sonner", () => ({
   toast: {
     success: (...args: unknown[]) => toastSuccessMock(...args),
     error: (...args: unknown[]) => toastErrorMock(...args),
+    warning: (...args: unknown[]) => toastWarningMock(...args),
   },
+}));
+
+vi.mock("@/hooks/useSessionSync", () => ({
+  useSessionSync: () => ({
+    preview: (...args: unknown[]) => previewSyncMock(...args),
+    sync: (...args: unknown[]) => runSyncMock(...args),
+    isPreviewing: false,
+    isSyncing: false,
+  }),
 }));
 
 vi.mock("@/components/sessions/SessionToc", () => ({
@@ -87,8 +100,8 @@ const openSearch = () => {
 };
 
 const closeSearch = () => {
-  const closeButton = Array.from(screen.getAllByRole("button")).find(
-    (button) => button.querySelector(".lucide-x"),
+  const closeButton = Array.from(screen.getAllByRole("button")).find((button) =>
+    button.querySelector(".lucide-x"),
   );
 
   if (!closeButton) {
@@ -102,6 +115,14 @@ describe("SessionManagerPage", () => {
   beforeEach(() => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
+    toastWarningMock.mockReset();
+    previewSyncMock.mockReset();
+    runSyncMock.mockReset();
+    vi.spyOn(sessionsApi, "getSyncCapabilities").mockResolvedValue({
+      executionSupported: false,
+      reason: "sync disabled in tests",
+      supportedTargetProviders: [],
+    });
     Element.prototype.scrollIntoView = vi.fn();
 
     const sessions: SessionMeta[] = [
@@ -138,6 +159,102 @@ describe("SessionManagerPage", () => {
     };
 
     setSessionFixtures(sessions, messages);
+  });
+
+  it("runs sync preview and renders summary badges", async () => {
+    const sessions: SessionMeta[] = [
+      {
+        providerId: "codex",
+        sessionId: "codex-session-1",
+        title: "Alpha Session",
+        sourcePath: "/mock/codex/session-1.jsonl",
+      },
+      {
+        providerId: "claude",
+        sessionId: "claude-session-1",
+        title: "Claude Session",
+        sourcePath: "/mock/claude/session-1.jsonl",
+      },
+    ];
+    setSessionFixtures(sessions, {});
+    previewSyncMock.mockResolvedValueOnce({
+      totalScanned: 7,
+      imported: 4,
+      skipped: 1,
+      conflicts: 2,
+      failed: 0,
+      warnings: ["Skipped unsupported source provider: unknown"],
+    });
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Alpha Session" }),
+      ).toBeInTheDocument(),
+    );
+
+    const previewButton = Array.from(screen.getAllByRole("button")).find(
+      (button) => button.querySelector(".lucide-play"),
+    );
+    expect(previewButton).toBeTruthy();
+
+    fireEvent.click(previewButton!);
+
+    await waitFor(() => {
+      expect(previewSyncMock).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("扫描 7")).toBeInTheDocument();
+      expect(screen.getByText("可导入 4")).toBeInTheDocument();
+      expect(screen.getByText("冲突 2")).toBeInTheDocument();
+      expect(screen.getByText("预览警告")).toBeInTheDocument();
+      expect(
+        screen.getByText("Skipped unsupported source provider: unknown"),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /清除预览/i }));
+    await waitFor(() => {
+      expect(screen.queryByText("扫描 7")).not.toBeInTheDocument();
+      expect(screen.queryByText("预览警告")).not.toBeInTheDocument();
+    });
+  });
+
+  it("disables sync execution action while backend execution is unavailable", async () => {
+    const sessions: SessionMeta[] = [
+      {
+        providerId: "codex",
+        sessionId: "codex-session-1",
+        title: "Alpha Session",
+        sourcePath: "/mock/codex/session-1.jsonl",
+      },
+      {
+        providerId: "claude",
+        sessionId: "claude-session-1",
+        title: "Claude Session",
+        sourcePath: "/mock/claude/session-1.jsonl",
+      },
+    ];
+    setSessionFixtures(sessions, {});
+    renderPage();
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Alpha Session" }),
+      ).toBeInTheDocument(),
+    );
+
+    const actionButtons = Array.from(screen.getAllByRole("button")).filter(
+      (button) => button.querySelector(".lucide-refresh-cw"),
+    );
+    const syncRunButton = actionButtons[0];
+    expect(syncRunButton).toBeTruthy();
+    expect(syncRunButton).toBeDisabled();
+    expect(sessionsApi.getSyncCapabilities).toHaveBeenCalledWith("codex");
+    expect(syncRunButton).toHaveAttribute(
+      "title",
+      "当前目标渠道暂不支持同步执行。",
+    );
+    expect(runSyncMock).not.toHaveBeenCalled();
   });
 
   it("deletes the selected session and selects the next visible session", async () => {
