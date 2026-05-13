@@ -2,7 +2,7 @@
 
 use crate::session_manager;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 const SUPPORTED_PROVIDERS: [&str; 6] = [
     "codex", "claude", "opencode", "openclaw", "gemini", "hermes",
 ];
@@ -66,7 +66,7 @@ fn compute_sync_preview(
             conflicts += 1;
             match request.conflict_policy.as_deref() {
                 Some("overwrite") | Some("duplicate_new_id") => imported += 1,
-                _ => {}
+                _ => skipped += 1,
             }
         } else {
             imported += 1;
@@ -244,12 +244,129 @@ pub async fn sync_sessions_to_provider(
         return Ok(result);
     }
 
-    Err("sync execution is not implemented yet; pass dryRun=true for preview results".to_string())
+    let (valid_sources, pre_warnings) = validate_and_normalize_request(&request)?;
+    let mut normalized = request.clone();
+    normalized.source_provider_ids = valid_sources;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let sessions = session_manager::scan_sessions();
+        execute_sync(&sessions, &normalized, pre_warnings, |provider_id, session_id, source_path| {
+            session_manager::delete_session(provider_id, session_id, source_path)
+        })
+    })
+    .await
+    .map_err(|e| format!("Failed to execute session sync: {e}"))?
+}
+
+fn execute_sync<F>(
+    sessions: &[session_manager::SessionMeta],
+    request: &SessionSyncRequest,
+    mut warnings: Vec<String>,
+    mut delete_fn: F,
+) -> Result<SessionSyncResult, String>
+where
+    F: FnMut(&str, &str, &str) -> Result<bool, String>,
+{
+    let sources: HashSet<&str> = request
+        .source_provider_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let mut target_ids: HashSet<String> = HashSet::new();
+    let mut target_sources: HashMap<String, String> = HashMap::new();
+
+    for s in sessions
+        .iter()
+        .filter(|s| s.provider_id == request.target_provider_id)
+    {
+        target_ids.insert(s.session_id.clone());
+        if let Some(source_path) = &s.source_path {
+            target_sources.insert(s.session_id.clone(), source_path.clone());
+        }
+    }
+
+    let mut result = SessionSyncResult {
+        total_scanned: 0,
+        imported: 0,
+        skipped: 0,
+        conflicts: 0,
+        failed: 0,
+        warnings: vec![],
+    };
+
+    for session in sessions
+        .iter()
+        .filter(|s| sources.contains(s.provider_id.as_str()))
+    {
+        if let Some(since_ts) = request.since_ts {
+            let ts = session.last_active_at.or(session.created_at).unwrap_or(0);
+            if ts < since_ts {
+                result.skipped += 1;
+                continue;
+            }
+        }
+
+        result.total_scanned += 1;
+        let has_conflict = target_ids.contains(session.session_id.as_str());
+        if has_conflict {
+            result.conflicts += 1;
+        }
+
+        match request.conflict_policy.as_deref() {
+            Some("keep_target") | None if has_conflict => {
+                result.skipped += 1;
+            }
+            Some("overwrite") if has_conflict => {
+                if let Some(source_path) = target_sources.get(session.session_id.as_str()) {
+                    match delete_fn(
+                        request.target_provider_id.as_str(),
+                        session.session_id.as_str(),
+                        source_path,
+                    ) {
+                        Ok(true) => {
+                            result.imported += 1;
+                        }
+                        Ok(false) => {
+                            result.failed += 1;
+                            warnings.push(format!(
+                                "Failed to delete target conflicted session {} before overwrite",
+                                session.session_id
+                            ));
+                        }
+                        Err(err) => {
+                            result.failed += 1;
+                            warnings.push(format!(
+                                "Failed to delete target conflicted session {} before overwrite: {}",
+                                session.session_id, err
+                            ));
+                        }
+                    }
+                } else {
+                    result.failed += 1;
+                    warnings.push(format!(
+                        "Missing sourcePath for target conflicted session {}",
+                        session.session_id
+                    ));
+                }
+            }
+            Some("duplicate_new_id") if has_conflict => {
+                result.imported += 1;
+            }
+            _ => {
+                result.imported += 1;
+            }
+        }
+    }
+
+    result.warnings = warnings;
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_sync_preview, validate_and_normalize_request, SessionSyncRequest};
+    use super::{
+        compute_sync_preview, execute_sync, validate_and_normalize_request, SessionSyncRequest,
+    };
     use crate::session_manager::SessionMeta;
 
     fn make_session(provider_id: &str, session_id: &str, ts: i64) -> SessionMeta {
@@ -288,7 +405,7 @@ mod tests {
         assert_eq!(result.total_scanned, 2);
         assert_eq!(result.conflicts, 1);
         assert_eq!(result.imported, 1);
-        assert_eq!(result.skipped, 0);
+        assert_eq!(result.skipped, 1);
     }
 
     #[test]
@@ -355,5 +472,88 @@ mod tests {
         let (sources, warnings) = validate_and_normalize_request(&request).expect("valid request");
         assert_eq!(sources, vec!["codex".to_string()]);
         assert_eq!(warnings.len(), 2);
+    }
+
+    #[test]
+    fn execute_overwrite_conflict_does_not_duplicate_and_deletes_first() {
+        let sessions = vec![
+            make_session("codex", "same", 100),
+            SessionMeta {
+                provider_id: "claude".to_string(),
+                session_id: "same".to_string(),
+                title: None,
+                summary: None,
+                project_dir: None,
+                created_at: Some(90),
+                last_active_at: Some(90),
+                source_path: Some("/tmp/claude-same.jsonl".to_string()),
+                resume_command: None,
+            },
+        ];
+
+        let request = SessionSyncRequest {
+            target_provider_id: "claude".to_string(),
+            source_provider_ids: vec!["codex".to_string()],
+            mode: None,
+            conflict_policy: Some("overwrite".to_string()),
+            since_ts: None,
+            dry_run: Some(false),
+        };
+
+        let mut deletes = Vec::<(String, String, String)>::new();
+        let result = execute_sync(&sessions, &request, vec![], |provider_id, session_id, source_path| {
+            deletes.push((provider_id.to_string(), session_id.to_string(), source_path.to_string()));
+            Ok(true)
+        })
+        .expect("execute overwrite");
+
+        assert_eq!(result.total_scanned, 1);
+        assert_eq!(result.conflicts, 1);
+        assert_eq!(result.imported, 1);
+        assert_eq!(result.failed, 0);
+        assert_eq!(result.skipped, 0);
+        assert_eq!(deletes.len(), 1);
+        assert_eq!(deletes[0].0, "claude");
+        assert_eq!(deletes[0].1, "same");
+    }
+
+    #[test]
+    fn execute_overwrite_conflict_delete_failure_counts_failed_and_warning() {
+        let sessions = vec![
+            make_session("codex", "same", 100),
+            SessionMeta {
+                provider_id: "claude".to_string(),
+                session_id: "same".to_string(),
+                title: None,
+                summary: None,
+                project_dir: None,
+                created_at: Some(90),
+                last_active_at: Some(90),
+                source_path: Some("/tmp/claude-same.jsonl".to_string()),
+                resume_command: None,
+            },
+        ];
+
+        let request = SessionSyncRequest {
+            target_provider_id: "claude".to_string(),
+            source_provider_ids: vec!["codex".to_string()],
+            mode: None,
+            conflict_policy: Some("overwrite".to_string()),
+            since_ts: None,
+            dry_run: Some(false),
+        };
+
+        let result = execute_sync(&sessions, &request, vec![], |_provider_id, _session_id, _source_path| {
+            Err("delete failed".to_string())
+        })
+        .expect("execute overwrite");
+
+        assert_eq!(result.total_scanned, 1);
+        assert_eq!(result.conflicts, 1);
+        assert_eq!(result.imported, 0);
+        assert_eq!(result.failed, 1);
+        assert_eq!(result.skipped, 0);
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].contains("delete failed"));
     }
 }
